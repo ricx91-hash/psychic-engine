@@ -1,0 +1,147 @@
+REPORT:
+Company
+User: Date
+14/9/26 9:53:43 am
+Location
+Instrument
+Model
+MI 3309BT
+Serial User data
+26150662
+0 Node/
+Comment: Narre Warren Dental
+1 Node/dental room/
+Comment: suite 3
+2 Node/dental room/011/ PASS
+Name: curing light
+(Room) Location: dental room
+Test code: Class 2
+Next test of appliance: 11.09.2027 00:00:00
+Visual Inspection          11.09.2026 12:20:00  PASS
+Instrument : 26150662
+RESULTS
+Result : 0
+PARAMETERS
+Insulation-P          11.09.2026 12:20:00  PASS
+Instrument : 26150662
+RESULTS
+Riso-S : >200 MOhm
+  Limit : 0.01 MOhm
+PARAMETERS
+Output iso voltage : 250 V | Duration : 2 s | 
+Subleakage-P          11.09.2026 12:20:00  PASS
+Instrument : 26150662
+RESULTS
+Isub-S : 0.03 mA
+  Limit : 0.25 mA
+PARAMETERS
+Duration : 5 s | Output : 30.0 V | 
+3 Node/dental room/019/ PASS
+Name: dental chair
+(Room) Location: dental room
+Test code: Class 1
+Next test of appliance: 14.09.2027 00:00:00
+Visual Inspection          14.09.2026 09:10:00  PASS
+Instrument : 26150662
+RESULTS
+Result : 0
+PARAMETERS
+Earth Continuity          14.09.2026 09:10:00  PASS
+Instrument : 26150662
+RESULTS
+R : 0.11 Ohm
+  Limit : 1.00 Ohm
+PARAMETERS
+I out : 200 mA | Duration : 2 s | 
+Insulation          14.09.2026 09:10:00  PASS
+Instrument : 26150662
+RESULTS
+Riso : >200 MOhm
+  Limit : 1 MOhm
+PARAMETERS
+Output iso voltage : 500 V | Duration : 3 s | 
+4 Node/dental room/020/ PASS
+Name: setting box
+(Room) Location: dental room
+Test code: Class 2
+Next test of appliance: 14.09.2027 00:00:00
+Visual Inspection          14.09.2026 09:17:00  PASS
+Instrument : 26150662
+RESULTS
+Result : 0
+PARAMETERS
+Insulation-P          14.09.2026 09:17:00  PASS
+Instrument : 26150662
+RESULTS
+Riso-S : >200 MOhm
+  Limit : 0.01 MOhm
+PARAMETERS
+Output iso voltage : 250 V | Duration : 2 s | 
+Subleakage-P          14.09.2026 09:17:00  PASS
+Instrument : 26150662
+RESULTS
+Isub-S : 0.04 mA
+  Limit : 0.25 mA
+PARAMETERS
+Duration : 5 s | Output : 30.0 V | 
+5 Node/dental room/021/ PASS
+Name: computer
+(Room) Location: dental room
+Test code: Class 2
+Next test of appliance: 14.09.2027 00:00:00
+Visual Inspection          14.09.2026 09:20:00  PASS
+Instrument : 26150662
+RESULTS
+Result : 0
+PARAMETERS
+Insulation-P          14.09.2026 09:20:00  PASS
+Instrument : 26150662
+RESULTS
+Riso-S : >200 MOhm
+  Limit : 0.01 MOhm
+PARAMETERS
+Output iso voltage : 250 V | Duration : 2 s | 
+Subleakage-P          14.09.2026 09:20:00  PASS
+Instrument : 26150662
+RESULTS
+Isub-S : 0.00 mA
+  Limit : 0.25 mA
+PARAMETERS
+Duration : 5 s | Output : 30.0 V | 
+6 Node/dental room/022/ PASS
+Name: monitor
+(Room) Location: dental room
+Test code: Class 2
+Next test of appliance: 14.09.2027 00:00:00
+Visual Inspection          14.09.2026 09:24:00  PASS
+Instrument : 26150662
+RESULTS
+Result : 0
+PARAMETERS
+Insulation-P          14.09.2026 09:24:00  PASS
+Instrument : 26150662
+RESULTS
+Riso-S : >200 MOhm
+  Limit : 0.01 MOhm
+PARAMETERS
+Output iso voltage : 250 V | Duration : 2 s | 
+Subleakage-P          14.09.2026 09:24:00  PASS
+Instrument : 26150662
+RESULTS
+Isub-S : 0.00 mA
+  Limit : 0.25 mA
+PARAMETERS
+Duration : 5 s | Output : 30.0 V | 
+7 Node/dental room/018/ PASS
+Name: dental chair
+(Room) Location: dental room
+Test code: custom
+Next test of appliance: 14.09.2027 00:00:00
+Touch Leakage          14.09.2026 09:07:00  PASS
+Instrument : 26150662
+RESULTS
+Itou : 0.00 mA
+  Limit : 0.50 mA
+S : 0.04 kVA
+PARAMETERS
+Duration : 3 s | 

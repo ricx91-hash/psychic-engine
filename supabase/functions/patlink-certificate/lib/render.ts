@@ -95,7 +95,13 @@ export async function loadFonts(doc: PDFDocument, regUrl: string, boldUrl: strin
 
 /** Every string from the source PDF that will be drawn. */
 export function sourceStrings(report: ParsedReport): string[] {
-  const out: string[] = [report.site ?? "", report.instrumentModel ?? "", ...report.instrumentSerials, ...report.issues];
+  const out: string[] = [
+    report.site ?? "",
+    report.instrumentModel ?? "",
+    ...report.instrumentSerials,
+    ...report.issues,
+    ...report.groups.map((g) => `${g.path.join("/")} ${g.comment ?? ""}`),
+  ];
   for (const it of report.items) {
     out.push(it.path.join("/"), it.name ?? "", ...it.issues);
     for (const f of it.fields) out.push(f.key, f.value);
@@ -500,6 +506,12 @@ function drawReport(L: Layout, inp: RenderInput) {
       L.para(`• ${st}: #${i.node} ${i.path.join("/")} ${i.name ?? ""}${why}`, { size: 8.5, color: STATUS_COLOUR[st] });
     }
     L.y -= 4;
+  }
+
+  const notes = report.groups.filter((g) => g.path.length > 0 && g.comment);
+  if (notes.length) {
+    L.heading("Location notes");
+    for (const g of notes) L.para(`${g.path.join(" / ")}: ${g.comment}`, { size: 9 });
   }
 
   L.heading("Itemised results");

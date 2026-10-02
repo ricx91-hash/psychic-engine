@@ -191,6 +191,47 @@ test("parseKVLine", () => {
   assert.equal(parseKVLine("RESULTS"), null);
 });
 
+// Real PATLink export (Narre Warren Dental, 14/9/26), text extracted from the PDF.
+test("real export: every item and value read exactly", () => {
+  const lines = readFileSync(new URL("./fixtures/narre_warren_dental_2026-09-14.txt", import.meta.url), "utf8").split("\n");
+  const r = parsePatlinkText(lines);
+  assert.equal(r.site, "Narre Warren Dental");
+  assert.equal(r.instrumentModel, "MI 3309BT");
+  assert.deepEqual(r.instrumentSerials, ["26150662"]);
+  assert.deepEqual(r.issues, []);
+  assert.equal(r.groups.find((g) => g.path.join("/") === "dental room")?.comment, "suite 3");
+
+  const rows = r.items.map((i) => [i.path.join("/"), i.name, i.testCode, displayStatus(i), i.nextTest, i.tests.map((t) => t.name).join(",")]);
+  assert.deepEqual(rows, [
+    ["dental room/011", "curing light", "Class 2", "PASS", "11.09.2027 00:00:00", "Visual Inspection,Insulation-P,Subleakage-P"],
+    ["dental room/019", "dental chair", "Class 1", "PASS", "14.09.2027 00:00:00", "Visual Inspection,Earth Continuity,Insulation"],
+    ["dental room/020", "setting box", "Class 2", "PASS", "14.09.2027 00:00:00", "Visual Inspection,Insulation-P,Subleakage-P"],
+    ["dental room/021", "computer", "Class 2", "PASS", "14.09.2027 00:00:00", "Visual Inspection,Insulation-P,Subleakage-P"],
+    ["dental room/022", "monitor", "Class 2", "PASS", "14.09.2027 00:00:00", "Visual Inspection,Insulation-P,Subleakage-P"],
+    ["dental room/018", "dental chair", "custom", "PASS", "14.09.2027 00:00:00", "Touch Leakage"],
+  ]);
+
+  // Earth continuity block spans a page break in the source PDF.
+  const earth = r.items[1].tests[1];
+  assert.deepEqual(earth.results, [{ key: "R", value: "0.11 Ohm" }, { key: "Limit", value: "1.00 Ohm" }]);
+  assert.deepEqual(earth.parameters, [{ key: "I out", value: "200 mA" }, { key: "Duration", value: "2 s" }]);
+
+  assert.deepEqual(r.items[0].tests[2].results, [{ key: "Isub-S", value: "0.03 mA" }, { key: "Limit", value: "0.25 mA" }]);
+  assert.deepEqual(r.items[0].tests[2].parameters, [{ key: "Duration", value: "5 s" }, { key: "Output", value: "30.0 V" }]);
+  assert.deepEqual(r.items[5].tests[0].results, [
+    { key: "Itou", value: "0.00 mA" },
+    { key: "Limit", value: "0.50 mA" },
+    { key: "S", value: "0.04 kVA" },
+  ]);
+
+  const s = summarise(r);
+  assert.equal(s.overall, "COMPLIANT");
+  assert.equal(s.total, 6);
+  assert.equal(s.firstTest, "11.09.2026 12:20:00");
+  assert.equal(s.lastTest, "14.09.2026 09:24:00");
+  assert.equal(s.earliestNextTest, "11.09.2027 00:00:00");
+});
+
 const clientsMd = `# Clients
 
 Some notes here.

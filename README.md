@@ -90,11 +90,13 @@ npm test     # Node 22+, no dependencies
 
 ## Known limits / verify on first real use
 
-- **Parser was built from one text sample**, not an actual PDF file. PDF text extraction
-  can split or merge lines differently from the copied text. Run a real export through and
-  check the email: any line the parser doesn't recognise shows up as UNVERIFIED rather than
-  being guessed. If repeated page headers or footers get flagged, add them to `NOISE_RES`
-  in `lib/parser.ts` and add a test.
+- **Checked against a real export** (Narre Warren Dental, 14/9/26, 3 pages, 6 items:
+  Visual Inspection, Insulation, Insulation-P, Subleakage-P, Earth Continuity, Touch
+  Leakage, plus a test block split across a page break). Every value matches the source,
+  with zero UNVERIFIED flags. The text is in `tests/fixtures/` as a regression test.
+  That text was pulled out with a stand-in extractor. The deployed function uses pdf.js,
+  so check the first live email against the PDF too. Any line pdf.js reads differently
+  shows up as UNVERIFIED rather than being guessed.
 - RCD / 3-phase blocks are parsed generically but haven't been seen yet. Check the first ones.
 - The Unicode font (Noto Sans, for Ω/µ/Δ) is fetched from jsDelivr on first run. If that
   fails, it falls back to Helvetica. Any symbol Helvetica can't print is shown as
