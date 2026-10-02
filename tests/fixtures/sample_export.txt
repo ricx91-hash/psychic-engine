@@ -1,0 +1,29 @@
+DeltaPAT MI 3309BT
+Serial number : 26150662
+0 Node/
+Comment: Narre Warren Dental
+1 Node/dental room/
+2 Node/dental room/002/ NO RESULT
+Name: drill
+(Room) Location: dental room
+Test code: Class 2
+Next test of appliance: 10.09.2027 12:38:01
+Page 1 of 2
+3 Node/home/
+5 Node/home/004/ PASS
+Name: hairdryer
+(Room) Location: home
+Test code: Class 2
+Next test of appliance: 10.09.2027 00:00:00
+Visual Inspection 10.09.2026 14:23:00 PASS
+Instrument : 26150662
+RESULTS
+Result : 0
+PARAMETERS
+Insulation 10.09.2026 14:23:00 PASS
+Instrument : 26150662
+RESULTS
+Riso : >200 MOhm
+Limit : 1 MOhm
+PARAMETERS
+Output iso voltage : 500 V | Duration : 2 s |
