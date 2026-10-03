@@ -88,6 +88,17 @@ tests/                parser + lookup tests
 npm test     # Node 22+, no dependencies
 ```
 
+## Previewing the certificate layout
+
+```bash
+node preview/render-preview.mjs [fixture.txt] [outDir]   # writes page-N.png
+```
+
+This renders `lib/render.ts` in headless Chromium, using a small SVG stand-in for
+pdf-lib (`preview/mock-pdf-lib.js`) and the same Liberation Sans fonts and logo
+the deployed function uses. Use it to check layout changes before deploying.
+Logo and fonts are served from `assets/`, pinned by commit in `lib/config.ts`.
+
 ## Known limits / verify on first real use
 
 - **Checked against a real export** (Narre Warren Dental, 14/9/26, 3 pages, 6 items:

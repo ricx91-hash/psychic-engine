@@ -24,7 +24,10 @@ export interface DeliveryConfig {
   fontBoldUrl: string;
 }
 
-const env = (k: string, fallback = "") => (Deno.env.get(k) ?? fallback).trim();
+const env = (k: string, fallback = "") => (Deno.env.get(k) || fallback).trim();
+
+// Logo and fonts, pinned to the commit that added them so the URLs never move.
+const ASSETS = "https://raw.githubusercontent.com/ricx91-hash/psychic-engine/5f937aef403fa6041434b5ebf4b6514f00d13770/assets";
 
 export function businessConfig(): BusinessConfig {
   return {
@@ -48,16 +51,11 @@ export function deliveryConfig(): DeliveryConfig {
     from: env("RESEND_FROM", "RX Test N Tag <onboarding@resend.dev>"),
     reviewTo: env("REVIEW_TO", "info@rxtnt.com.au"),
     pipelineToken: env("PIPELINE_TOKEN"),
-    logoUrl: env("LOGO_URL"),
-    // Unicode font so unit symbols like Ω, µ, Δ print exactly as in the source.
-    fontUrl: env(
-      "FONT_URL",
-      "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf",
-    ),
-    fontBoldUrl: env(
-      "FONT_BOLD_URL",
-      "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSans/hinted/ttf/NotoSans-Bold.ttf",
-    ),
+    logoUrl: env("LOGO_URL", `${ASSETS}/rxtnt-logo.png`),
+    // Liberation Sans (SIL OFL), bundled in this repo: covers unit symbols
+    // like Ω, µ, Δ, and matches the local preview (preview/render-preview.mjs).
+    fontUrl: env("FONT_URL", `${ASSETS}/fonts/LiberationSans-Regular.ttf`),
+    fontBoldUrl: env("FONT_BOLD_URL", `${ASSETS}/fonts/LiberationSans-Bold.ttf`),
   };
 }
 

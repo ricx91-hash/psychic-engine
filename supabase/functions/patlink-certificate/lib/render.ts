@@ -1,14 +1,20 @@
-// Branded Certificate of Compliance + itemised Test Report (pdf-lib).
-// Every test value is drawn from the exact source string. The renderer never
-// formats, rounds or re-words a value. A character the font can't draw is
-// shown as [U+XXXX], and index.ts has already marked the report
-// REVIEW REQUIRED if that happens.
+// Branded Certificate of Compliance + Test Report (pdf-lib).
+//
+// Layout: page 1 is the certificate; then an asset register (one row per
+// item) and detailed results (one table per item). Every reading, limit and
+// setting is drawn from the exact source string. The renderer never formats,
+// rounds or re-words a test value. Dates are shortened to the date part only
+// in summary tables; full timestamps appear in the detailed results. A
+// character the font can't draw is shown as [U+XXXX], and index.ts has
+// already marked the report REVIEW REQUIRED if that happens.
+//
+// Preview locally without deploying: node preview/render-preview.mjs
 
 import { PDFDocument, PDFFont, PDFImage, PDFPage, rgb, StandardFonts } from "npm:pdf-lib@1.17.1";
 import fontkit from "npm:@pdf-lib/fontkit@1.1.1";
 import type { BusinessConfig } from "./config.ts";
-import { displayStatus } from "./summary.ts";
-import type { ClientLookup, DisplayStatus, Item, KV, ParsedReport, Summary } from "./types.ts";
+import { dateKey, displayStatus } from "./summary.ts";
+import type { ClientLookup, DisplayStatus, Item, KV, ParsedReport, Summary, TestBlock } from "./types.ts";
 
 type RGB = ReturnType<typeof rgb>;
 const hex = (h: string): RGB =>
@@ -16,17 +22,19 @@ const hex = (h: string): RGB =>
 
 const C = {
   navy: hex("#0B1F3A"),
+  navySoft: hex("#EDF1F6"),
   red: hex("#8B1A1A"),
   gold: hex("#C9A227"),
-  ink: hex("#1A1A1A"),
-  muted: hex("#5A6270"),
-  line: hex("#D5D9E0"),
-  panel: hex("#F3F5F8"),
+  ink: hex("#1F2933"),
+  body: hex("#3E4C59"),
+  muted: hex("#7B8794"),
+  rule: hex("#D9DEE5"),
+  zebra: hex("#F6F8FA"),
   white: rgb(1, 1, 1),
-  pass: hex("#1E7B34"),
-  fail: hex("#B3261E"),
-  noResult: hex("#6B6B6B"),
-  unverified: hex("#C45A00"),
+  pass: hex("#18794E"),
+  fail: hex("#B42318"),
+  noResult: hex("#6B7280"),
+  unverified: hex("#C4520F"),
 };
 
 const STATUS_COLOUR: Record<DisplayStatus, RGB> = {
@@ -42,10 +50,11 @@ const OVERALL_COLOUR: Record<Summary["overall"], RGB> = {
   "REVIEW REQUIRED": C.unverified,
 };
 
-const A4: [number, number] = [595.28, 841.89];
-const M = 40; // page margin
-const W = A4[0] - 2 * M;
-const BOTTOM = 56; // keep clear for footer
+const PAGE: [number, number] = [595.28, 841.89];
+const TOP = PAGE[1];
+const M = 42; // side margin
+const W = PAGE[0] - 2 * M;
+const BOTTOM = 62; // keep clear for footer
 
 export interface Fonts {
   reg: PDFFont;
@@ -77,12 +86,14 @@ async function fetchFont(url: string): Promise<Uint8Array> {
   return bytes;
 }
 
-/** Load a Unicode TTF if reachable, else fall back to Helvetica. */
+/** Load the Unicode TTFs if reachable, else fall back to Helvetica. */
 export async function loadFonts(doc: PDFDocument, regUrl: string, boldUrl: string): Promise<Fonts> {
   try {
     const [r, b] = await Promise.all([fetchFont(regUrl), fetchFont(boldUrl)]);
     doc.registerFontkit(fontkit);
-    return { reg: await doc.embedFont(r, { subset: true }), bold: await doc.embedFont(b, { subset: true }), unicode: true };
+    const reg = await doc.embedFont(r, { subset: true });
+    const bold = await doc.embedFont(b, { subset: true });
+    return { reg, bold, unicode: true };
   } catch (e) {
     console.warn("Unicode font unavailable, using Helvetica:", e);
     return {
@@ -125,6 +136,26 @@ export function unsupportedChars(strings: string[], font: PDFFont): string[] {
   return [...bad];
 }
 
+/** "14.09.2027 00:00:00" -> "14.09.2027". Anything else is returned unchanged. */
+export function datePart(s: string | null): string | null {
+  if (!s) return s;
+  const m = /^(\d{1,2}\.\d{1,2}\.\d{4})\b/.exec(s.trim());
+  return m ? m[1] : s;
+}
+
+function testStatus(t: TestBlock): DisplayStatus {
+  return t.issues.length > 0 || t.status === null ? "UNVERIFIED" : t.status;
+}
+
+const isLimit = (k: KV) => /^limit$/i.test(k.key);
+const kvLines = (kvs: KV[]) => kvs.map((k) => `${k.key}: ${k.value}`).join("\n");
+
+type Cell = { text: string; bold?: boolean; color?: RGB } | { pill: DisplayStatus };
+interface Col {
+  title: string;
+  w: number;
+}
+
 class Layout {
   doc: PDFDocument;
   f: Fonts;
@@ -133,30 +164,39 @@ class Layout {
   y = 0;
   pages: PDFPage[] = [];
   logo: PDFImage | null;
-  business: BusinessConfig;
+  inp: RenderInput;
+  /** Re-drawn after a page break, e.g. a table header. */
+  continuation: (() => void) | null = null;
 
-  constructor(doc: PDFDocument, f: Fonts, logo: PDFImage | null, business: BusinessConfig) {
+  constructor(doc: PDFDocument, f: Fonts, logo: PDFImage | null, inp: RenderInput) {
     this.doc = doc;
     this.f = f;
     this.charset = new Set(f.reg.getCharacterSet());
     this.logo = logo;
-    this.business = business;
+    this.inp = inp;
   }
+
+  // ---- text primitives -------------------------------------------------
 
   /** Make a string drawable without altering any supported character. */
   s(text: string): string {
     let out = "";
     for (const ch of text) {
       const cp = ch.codePointAt(0)!;
-      if (cp < 32) out += " ";
+      if (cp === 10) out += "\n";
+      else if (cp < 32) out += " ";
       else if (this.charset.has(cp)) out += ch;
       else out += `[U+${cp.toString(16).toUpperCase().padStart(4, "0")}]`;
     }
     return out;
   }
 
+  font(bold?: boolean) {
+    return bold ? this.f.bold : this.f.reg;
+  }
+
   width(text: string, size: number, bold = false): number {
-    return (bold ? this.f.bold : this.f.reg).widthOfTextAtSize(this.s(text), size);
+    return this.font(bold).widthOfTextAtSize(this.s(text), size);
   }
 
   wrap(text: string, size: number, maxWidth: number, bold = false): string[] {
@@ -185,338 +225,525 @@ class Layout {
     return lines;
   }
 
-  draw(text: string, x: number, y: number, size: number, opts: { bold?: boolean; color?: RGB } = {}) {
-    this.page.drawText(this.s(text), {
+  text(t: string, x: number, y: number, size: number, o: { bold?: boolean; color?: RGB; opacity?: number } = {}) {
+    this.page.drawText(this.s(t), {
       x,
       y,
       size,
-      font: opts.bold ? this.f.bold : this.f.reg,
-      color: opts.color ?? C.ink,
+      font: this.font(o.bold),
+      color: o.color ?? C.ink,
+      opacity: o.opacity ?? 1,
     });
+  }
+
+  textRight(t: string, xRight: number, y: number, size: number, o: { bold?: boolean; color?: RGB; opacity?: number } = {}) {
+    this.text(t, xRight - this.width(t, size, o.bold), y, size, o);
+  }
+
+  textCenter(t: string, y: number, size: number, o: { bold?: boolean; color?: RGB } = {}) {
+    this.text(t, (PAGE[0] - this.width(t, size, o.bold)) / 2, y, size, o);
   }
 
   /** Wrapped paragraph at the cursor. */
-  para(text: string, opts: { x?: number; width?: number; size?: number; bold?: boolean; color?: RGB; gap?: number } = {}) {
-    const size = opts.size ?? 9.5;
-    const lh = size * 1.35;
-    const x = opts.x ?? M;
-    for (const l of this.wrap(text, size, opts.width ?? W - (x - M), opts.bold)) {
+  para(t: string, o: { x?: number; width?: number; size?: number; bold?: boolean; color?: RGB; gap?: number } = {}) {
+    const size = o.size ?? 9.5;
+    const lh = size * 1.4;
+    const x = o.x ?? M;
+    for (const l of this.wrap(t, size, o.width ?? W - (x - M), o.bold)) {
       this.ensure(lh);
-      this.draw(l, x, this.y - size, size, opts);
+      this.text(l, x, this.y - size, size, o);
       this.y -= lh;
     }
-    this.y -= opts.gap ?? 0;
+    this.y -= o.gap ?? 0;
   }
 
-  ensure(h: number) {
-    if (this.y - h < BOTTOM) this.reportPage();
+  // ---- shapes ----------------------------------------------------------
+
+  rect(x: number, yTop: number, w: number, h: number, fill: RGB | undefined, border?: RGB, bw = 0.75) {
+    this.page.drawRectangle({ x, y: yTop - h, width: w, height: h, color: fill, borderColor: border, borderWidth: border ? bw : 0 });
   }
 
-  crest(x: number, y: number, scale: number) {
-    if (this.logo) {
-      const d = this.logo.scale(1);
-      const h = 70 * scale;
-      this.page.drawImage(this.logo, { x, y: y - h, width: (d.width / d.height) * h, height: h });
-      return;
-    }
-    // Vector shield crest: navy shield, gold rim, gold bolt, "RX" mark.
-    const shield = "M30 0 L60 8 L60 34 C60 52 46 64 30 70 C14 64 0 52 0 34 L0 8 Z";
-    this.page.drawSvgPath(shield, { x, y, scale, color: C.navy, borderColor: C.gold, borderWidth: 2.5 });
-    const bolt = "M36 10 L20 40 L30 40 L24 62 L42 30 L32 30 L40 10 Z";
-    this.page.drawSvgPath(bolt, { x, y, scale, color: C.gold });
-    const size = 17 * scale;
-    const tw = this.f.bold.widthOfTextAtSize("RX", size);
-    this.page.drawText("RX", { x: x + 30 * scale - tw / 2, y: y - 40 * scale, size, font: this.f.bold, color: C.white });
+  round(x: number, yTop: number, w: number, h: number, r: number, fill: RGB | undefined, border?: RGB, bw = 0.75) {
+    const p = `M ${r} 0 H ${w - r} Q ${w} 0 ${w} ${r} V ${h - r} Q ${w} ${h} ${w - r} ${h} H ${r} Q 0 ${h} 0 ${h - r} V ${r} Q 0 0 ${r} 0 Z`;
+    this.page.drawSvgPath(p, { x, y: yTop, color: fill, borderColor: border, borderWidth: border ? bw : 0 });
   }
 
-  certificatePage() {
-    this.page = this.doc.addPage(A4);
-    this.pages.push(this.page);
-    const top = A4[1];
-    this.page.drawRectangle({ x: 0, y: top - 100, width: A4[0], height: 100, color: C.navy });
-    this.page.drawRectangle({ x: 0, y: top - 104, width: A4[0], height: 4, color: C.gold });
-    this.crest(M, top - 14, 1.05);
-    this.draw(this.business.businessName.toUpperCase(), M + 80, top - 46, 22, { bold: true, color: C.white });
-    this.draw("Electrical Test & Tag Compliance  ·  South East Melbourne", M + 80, top - 64, 10, { color: C.white });
-    this.draw(this.business.tagline, M + 80, top - 82, 11, { bold: true, color: C.gold });
-    this.y = top - 124;
+  hline(y: number, color = C.rule, thickness = 0.6, x1 = M, x2 = M + W) {
+    this.page.drawLine({ start: { x: x1, y }, end: { x: x2, y }, thickness, color });
   }
 
-  reportPage() {
-    this.page = this.doc.addPage(A4);
-    this.pages.push(this.page);
-    const top = A4[1];
-    this.page.drawRectangle({ x: 0, y: top - 50, width: A4[0], height: 50, color: C.navy });
-    this.page.drawRectangle({ x: 0, y: top - 53, width: A4[0], height: 3, color: C.gold });
-    this.crest(M, top - 6, 0.55);
-    this.draw(`${this.business.businessName.toUpperCase()}  ·  TEST REPORT`, M + 44, top - 30, 13, { bold: true, color: C.white });
-    const tl = this.business.tagline;
-    this.draw(tl, A4[0] - M - this.width(tl, 9, true), top - 30, 9, { bold: true, color: C.gold });
-    this.y = top - 72;
-  }
-
-  chip(label: string, xRight: number, yTop: number, color: RGB, size = 8.5): number {
-    const w = this.width(label, size, true) + 12;
-    this.page.drawRectangle({ x: xRight - w, y: yTop - size - 7, width: w, height: size + 7, color });
-    this.draw(label, xRight - w + 6, yTop - size - 2.5, size, { bold: true, color: C.white });
+  /** Status pill, left edge at x, vertically centred on yMid. Returns width. */
+  pill(status: DisplayStatus, x: number, yMid: number, size = 7) {
+    const w = this.width(status, size, true) + 12;
+    const h = size + 6.5;
+    this.round(x, yMid + h / 2, w, h, h / 2, STATUS_COLOUR[status]);
+    this.text(status, x + 6, yMid - size * 0.36, size, { bold: true, color: C.white });
     return w;
   }
 
-  heading(text: string, color = C.navy) {
-    this.ensure(28);
-    this.y -= 6;
-    this.draw(text, M, this.y - 12, 12, { bold: true, color });
-    this.y -= 16;
-    this.page.drawLine({ start: { x: M, y: this.y }, end: { x: M + W, y: this.y }, thickness: 1.2, color: C.gold });
-    this.y -= 8;
+  pillWidth(status: DisplayStatus, size = 7) {
+    return this.width(status, size, true) + 12;
   }
 
-  /** Two-column label/value rows inside a panel. */
-  panel(title: string, rows: [string, string, RGB?][], x = M, width = W) {
-    const labelW = width < W ? 84 : 108;
-    const size = 9.5;
-    const lh = size * 1.35;
-    const wrapped = rows.map(([l, v, c]) => ({ l, lines: this.wrap(v || "—", size, width - labelW - 16), c }));
-    const h = 24 + wrapped.reduce((a, r) => a + r.lines.length * lh + 3, 0) + 6;
-    const top = this.y;
-    this.page.drawRectangle({ x, y: top - h, width, height: h, color: C.panel, borderColor: C.line, borderWidth: 0.8 });
-    this.page.drawRectangle({ x, y: top - 3, width, height: 3, color: C.navy });
-    this.draw(title.toUpperCase(), x + 8, top - 17, 9, { bold: true, color: C.navy });
-    let y = top - 26;
-    for (const r of wrapped) {
-      this.draw(r.l, x + 8, y - size, size, { color: C.muted });
-      for (const line of r.lines) {
-        this.draw(line, x + 8 + labelW, y - size, size, { bold: !!r.c, color: r.c ?? C.ink });
-        y -= lh;
-      }
-      y -= 3;
+  logoAt(x: number, yTop: number, h: number) {
+    if (this.logo) {
+      const d = this.logo.scale(1);
+      this.page.drawImage(this.logo, { x, y: yTop - h, width: (d.width / d.height) * h, height: h });
+      return (d.width / d.height) * h;
     }
-    return top - h;
+    // Fallback crest if LOGO_URL is not set or unreachable.
+    const s = h / 70;
+    this.page.drawSvgPath("M30 0 L60 8 L60 34 C60 52 46 64 30 70 C14 64 0 52 0 34 L0 8 Z", {
+      x,
+      y: yTop,
+      scale: s,
+      color: C.navy,
+      borderColor: C.gold,
+      borderWidth: 2,
+    });
+    this.page.drawSvgPath("M36 10 L20 40 L30 40 L24 62 L42 30 L32 30 L40 10 Z", { x, y: yTop, scale: s, color: C.gold });
+    return 60 * s;
   }
 
-  footers(certNo: string) {
-    const n = this.pages.length;
-    this.pages.forEach((p, i) => {
-      p.drawLine({ start: { x: M, y: 40 }, end: { x: M + W, y: 40 }, thickness: 0.6, color: C.line });
-      const left = `Certificate ${certNo}  ·  ${this.business.businessName}  ·  ${this.business.standard}`;
-      p.drawText(this.s(left), { x: M, y: 28, size: 7.5, font: this.f.reg, color: C.muted });
-      const right = `Page ${i + 1} of ${n}`;
-      p.drawText(right, {
-        x: M + W - this.f.reg.widthOfTextAtSize(right, 7.5),
-        y: 28,
-        size: 7.5,
-        font: this.f.reg,
-        color: C.muted,
+  // ---- pages -----------------------------------------------------------
+
+  addPage() {
+    this.page = this.doc.addPage(PAGE);
+    this.pages.push(this.page);
+  }
+
+  /** Report page with running header. */
+  reportPage() {
+    this.addPage();
+    const { business, report, certificateNo } = this.inp;
+    const lw = this.logoAt(M, TOP - 18, 38);
+    this.text("TEST REPORT", M + lw + 10, TOP - 33, 13, { bold: true, color: C.navy });
+    this.text(`${report.site ?? "Site not found"}  ·  Certificate ${certificateNo}`, M + lw + 10, TOP - 46, 8, { color: C.muted });
+    this.textRight(business.businessName.toUpperCase(), M + W, TOP - 33, 9, { bold: true, color: C.navy });
+    this.textRight(business.tagline, M + W, TOP - 45, 7.5, { bold: true, color: C.gold });
+    this.hline(TOP - 64, C.gold, 1.2);
+    this.y = TOP - 82;
+  }
+
+  ensure(h: number) {
+    if (this.y - h < BOTTOM) {
+      this.reportPage();
+      this.continuation?.();
+    }
+  }
+
+  sectionTitle(title: string, subtitle?: string) {
+    this.ensure(subtitle ? 60 : 44);
+    this.text(title, M, this.y - 15, 15, { bold: true, color: C.navy });
+    this.y -= 22;
+    if (subtitle) {
+      this.text(subtitle, M, this.y - 9, 8.5, { color: C.muted });
+      this.y -= 16;
+    }
+    this.y -= 6;
+  }
+
+  // ---- table -----------------------------------------------------------
+
+  /** Height a table() call will take, for keeping blocks together. */
+  tableHeight(cols: Col[], rows: Cell[][], o: { size?: number; header?: "dark" | "light" } = {}) {
+    const size = o.size ?? 8.5;
+    const lh = size * 1.32;
+    let h = o.header === "light" ? 18 : 20;
+    for (const row of rows) {
+      const lines = Math.max(1, ...row.map((c, j) => ("pill" in c ? 1 : this.wrap(c.text, size, cols[j].w - 12, c.bold).length)));
+      h += Math.max(22, lines * lh + 11);
+    }
+    return h;
+  }
+
+  table(cols: Col[], rows: Cell[][], o: { size?: number; header?: "dark" | "light"; zebra?: boolean } = {}) {
+    const size = o.size ?? 8.5;
+    const lh = size * 1.32;
+    const padX = 6;
+    const headerH = o.header === "light" ? 18 : 20;
+    const drawHeader = () => {
+      let x = M;
+      if (o.header === "light") {
+        this.rect(M, this.y, W, headerH, C.zebra);
+        this.hline(this.y - headerH, C.rule, 0.8);
+      } else {
+        this.rect(M, this.y, W, headerH, C.navy);
+      }
+      for (const c of cols) {
+        this.text(c.title.toUpperCase(), x + padX, this.y - headerH / 2 - 2.6, 6.8, {
+          bold: true,
+          color: o.header === "light" ? C.muted : C.white,
+        });
+        x += c.w;
+      }
+      this.y -= headerH;
+    };
+
+    const prev = this.continuation;
+    this.ensure(headerH + 26);
+    drawHeader();
+    this.continuation = drawHeader;
+
+    rows.forEach((row, i) => {
+      const wrapped = row.map((c, j) => ("pill" in c ? [] : this.wrap(c.text, size, cols[j].w - padX * 2, c.bold)));
+      const lines = Math.max(1, ...wrapped.map((w) => w.length));
+      const h = Math.max(22, lines * lh + 11);
+      this.ensure(h);
+      if (o.zebra !== false && i % 2 === 1) this.rect(M, this.y, W, h, C.zebra);
+      let x = M;
+      row.forEach((c, j) => {
+        if ("pill" in c) {
+          this.pill(c.pill, x + padX, this.y - h / 2);
+        } else {
+          wrapped[j].forEach((l, k) => {
+            this.text(l, x + padX, this.y - 7 - size * 0.8 - k * lh, size, { bold: c.bold, color: c.color ?? C.ink });
+          });
+        }
+        x += cols[j].w;
       });
+      this.y -= h;
+      this.hline(this.y, C.rule, 0.5);
+    });
+    this.continuation = prev;
+  }
+
+  footers() {
+    const n = this.pages.length;
+    const { business, certificateNo } = this.inp;
+    this.pages.forEach((p, i) => {
+      p.drawLine({ start: { x: M, y: 44 }, end: { x: M + W, y: 44 }, thickness: 0.6, color: C.rule });
+      const name = `${business.businessName} · `;
+      p.drawText(this.s(name), { x: M, y: 30, size: 7.5, font: this.f.bold, color: C.navy });
+      p.drawText(this.s(business.tagline), {
+        x: M + this.width(name, 7.5, true),
+        y: 30,
+        size: 7.5,
+        font: this.f.bold,
+        color: C.gold,
+      });
+      const right = `Certificate ${certificateNo}  ·  Page ${i + 1} of ${n}`;
+      p.drawText(this.s(right), { x: M + W - this.width(right, 7.5), y: 30, size: 7.5, font: this.f.reg, color: C.muted });
     });
   }
 }
 
-const kvText = (kvs: KV[]) => kvs.map((k) => `${k.key}: ${k.value}`).join("   |   ");
+// ---- page 1: certificate -------------------------------------------------
 
-function drawCertificate(L: Layout, inp: RenderInput) {
-  const { report, summary, client, business } = inp;
-  L.certificatePage();
+function drawCertificate(L: Layout) {
+  const { report, summary, client, business, certificateNo, issuedAt } = L.inp;
+  L.addPage();
 
-  const title = "CERTIFICATE OF COMPLIANCE";
-  L.draw(title, (A4[0] - L.width(title, 22, true)) / 2, L.y - 22, 22, { bold: true, color: C.navy });
-  L.y -= 34;
-  const sub = `Inspection and testing of in-service electrical equipment in accordance with ${business.standard}`;
-  L.draw(sub, (A4[0] - L.width(sub, 9.5)) / 2, L.y - 10, 9.5, { color: C.muted });
-  L.y -= 22;
-  const meta = `Certificate No. ${inp.certificateNo}     Generated ${inp.issuedAt}`;
-  L.draw(meta, (A4[0] - L.width(meta, 8.5)) / 2, L.y - 9, 8.5, { color: C.muted });
-  L.y -= 22;
+  // Letterhead
+  L.rect(0, TOP, PAGE[0], 7, C.navy);
+  L.rect(0, TOP - 7, PAGE[0], 2, C.gold);
+  L.logoAt(M, TOP - 24, 96);
+  let ry = TOP - 46;
+  const right = (t: string, size: number, o: { bold?: boolean; color?: RGB } = {}) => {
+    L.textRight(t, M + W, ry, size, o);
+    ry -= size + 4.5;
+  };
+  right(business.businessName.toUpperCase(), 15, { bold: true, color: C.navy });
+  right("Electrical Test & Tag Compliance", 9, { color: C.body });
+  if (business.address) right(business.address, 9, { color: C.body });
+  right(business.abn ? `ABN ${business.abn}` : "ABN NOT SET", 9, { color: business.abn ? C.body : C.unverified });
+  const contact = [business.phone, business.email].filter(Boolean).join("  ·  ");
+  if (contact) right(contact, 9, { color: C.body });
+  if (business.website) right(business.website, 9, { bold: true, color: C.navy });
+
+  let y = TOP - 140;
+  L.hline(y, C.rule, 0.8);
+
+  // Title
+  y -= 40;
+  L.textCenter("CERTIFICATE OF COMPLIANCE", y, 24, { bold: true, color: C.navy });
+  y -= 18;
+  L.textCenter(`In-service inspection and testing of electrical equipment  ·  ${business.standard}`, y, 9.5, { color: C.muted });
+  y -= 11;
+  L.hline(y, C.gold, 1.5, PAGE[0] / 2 - 28, PAGE[0] / 2 + 28);
+  y -= 17;
+  L.textCenter(`Certificate No. ${certificateNo}      Issued ${issuedAt}`, y, 8.5, { color: C.muted });
+  y -= 18;
 
   if (summary.overall === "REVIEW REQUIRED") {
-    const msg = "DRAFT: UNVERIFIED DATA. DO NOT ISSUE TO CLIENT UNTIL CHECKED AGAINST THE SOURCE PDF.";
-    L.page.drawRectangle({ x: M, y: L.y - 22, width: W, height: 22, color: C.unverified });
-    L.draw(msg, M + (W - L.width(msg, 9, true)) / 2, L.y - 15, 9, { bold: true, color: C.white });
-    L.y -= 32;
+    const msg = "DRAFT: UNVERIFIED DATA. DO NOT ISSUE UNTIL CHECKED AGAINST THE SOURCE PDF.";
+    L.round(M, y, W, 24, 4, C.unverified);
+    L.textCenter(msg, y - 15.5, 8.5, { bold: true, color: C.white });
+    y -= 32;
   }
 
+  // Result banner
+  const bh = 62;
+  L.round(M, y, W, bh, 6, OVERALL_COLOUR[summary.overall]);
+  L.text("OVERALL RESULT", M + 20, y - 22, 7.5, { bold: true, color: C.white, opacity: 0.85 });
+  L.text(summary.overall, M + 20, y - 46, 22, { bold: true, color: C.white });
+  L.textRight(`${summary.pass} of ${summary.total}`, M + W - 20, y - 34, 22, { bold: true, color: C.white });
+  L.textRight("items passed", M + W - 20, y - 48, 8, { color: C.white, opacity: 0.85 });
+  y -= bh + 10;
+  L.y = y;
+  if (summary.overall !== "COMPLIANT") {
+    L.para(summary.overallReason, { size: 9, color: OVERALL_COLOUR[summary.overall], bold: true, gap: 2 });
+  }
+  y = L.y - 4;
+
+  // Details grid
   const c = client.client;
   const notFound = "NOT FOUND: check Clients.md";
-  const half = (W - 12) / 2;
-  const top = L.y;
-  const leftBottom = L.panel(
-    "Client & site",
-    [
-      ["Client", c?.company || notFound, c?.company ? undefined : C.unverified],
-      ["Contact", c?.contact ?? ""],
-      ["Email", c?.email ?? ""],
-      ["Site (PATLink)", report.site ?? "NOT FOUND IN PDF", report.site ? undefined : C.unverified],
-      ["Site address", c?.address || notFound, c?.address ? undefined : C.unverified],
-    ],
-    M,
-    half,
-  );
-  L.y = top;
-  const rightBottom = L.panel(
-    "Testing",
-    [
-      ["Test date(s)", summary.firstTest === summary.lastTest ? summary.firstTest ?? "" : `${summary.firstTest} to ${summary.lastTest}`],
-      ["Standard", business.standard],
-      ["Instrument", report.instrumentModel ?? "Not stated in source PDF"],
-      ["Instrument S/N", report.instrumentSerials.join(", ") || "Not stated in source PDF"],
-      ["Technician", business.technician || "NOT SET", business.technician ? undefined : C.unverified],
-    ],
-    M + half + 12,
-    half,
-  );
-  L.y = Math.min(leftBottom, rightBottom) - 14;
-
-  // Overall result
-  const oc = OVERALL_COLOUR[summary.overall];
-  const reasonLines = L.wrap(summary.overallReason, 9.5, W - 24);
-  const boxH = 44 + reasonLines.length * 13 + 30;
-  L.page.drawRectangle({ x: M, y: L.y - boxH, width: W, height: boxH, borderColor: oc, borderWidth: 2, color: C.white });
-  L.page.drawRectangle({ x: M, y: L.y - 30, width: W, height: 30, color: oc });
-  const ot = `OVERALL RESULT: ${summary.overall}`;
-  L.draw(ot, M + (W - L.width(ot, 14, true)) / 2, L.y - 20, 14, { bold: true, color: C.white });
-  let y = L.y - 46;
-  for (const l of reasonLines) {
-    L.draw(l, M + 12, y, 9.5);
-    y -= 13;
+  const first = datePart(summary.firstTest);
+  const last = datePart(summary.lastTest);
+  const tested = !first ? "—" : first === last ? first : `${first} to ${last}`;
+  const instrument = [report.instrumentModel, report.instrumentSerials.length ? `S/N ${report.instrumentSerials.join(", ")}` : null]
+    .filter(Boolean)
+    .join("  ·  ") || "Not stated in source PDF";
+  type Field = [string, string, RGB?];
+  const grid: [Field, Field][] = [
+    [["Client", c?.company || notFound, c?.company ? undefined : C.unverified], ["Site", report.site ?? "NOT FOUND IN PDF", report.site ? undefined : C.unverified]],
+    [["Site address", c?.address || notFound, c?.address ? undefined : C.unverified], ["Site contact", [c?.contact, c?.email].filter(Boolean).join("  ·  ") || "—"]],
+    [["Date(s) of testing", tested], ["Next test due", summary.earliestNextTest ? `${datePart(summary.earliestNextTest)} (earliest item)` : "—"]],
+    [["Test standard", business.standard], ["Test instrument", instrument]],
+    [["Tested by", business.technician || "NOT SET", business.technician ? undefined : C.unverified], ["Items tested", String(summary.total)]],
+  ];
+  const colW = W / 2;
+  L.hline(y, C.rule, 0.8);
+  for (const pair of grid) {
+    const wrapped = pair.map(([, v]) => L.wrap(v, 10, colW - 20, true));
+    const h = 22 + Math.max(...wrapped.map((w) => w.length)) * 13 + 6;
+    pair.forEach(([label, , color], i) => {
+      const x = M + i * colW + (i ? 14 : 0);
+      L.text(label.toUpperCase(), x, y - 14, 7, { bold: true, color: C.muted });
+      wrapped[i].forEach((l, k) => L.text(l, x, y - 28 - k * 13, 10, { bold: true, color: color ?? C.ink }));
+    });
+    y -= h;
+    L.hline(y, C.rule, 0.6);
   }
-  const counts = [
-    ["Items", summary.total],
-    ["Pass", summary.pass],
-    ["Fail", summary.fail],
-    ["No result", summary.noResult],
-    ["Unverified", summary.unverified],
-  ] as const;
-  const cw = (W - 24) / counts.length;
-  counts.forEach(([label, n], i) => {
-    const x = M + 12 + i * cw;
-    L.draw(String(n), x, y - 12, 13, { bold: true, color: C.navy });
-    L.draw(label, x + L.width(String(n), 13, true) + 5, y - 11, 8.5, { color: C.muted });
+  y -= 14;
+
+  // Stat tiles
+  const tiles: [string, number, RGB][] = [
+    ["Items tested", summary.total, C.navy],
+    ["Passed", summary.pass, C.pass],
+    ["Failed", summary.fail, summary.fail ? C.fail : C.navy],
+    ["Not tested", summary.noResult, summary.noResult ? C.noResult : C.navy],
+  ];
+  if (summary.unverified) tiles.push(["Unverified", summary.unverified, C.unverified]);
+  const gap = 8;
+  const tw = (W - gap * (tiles.length - 1)) / tiles.length;
+  tiles.forEach(([label, n, col], i) => {
+    const x = M + i * (tw + gap);
+    L.round(x, y, tw, 50, 4, C.zebra, C.rule);
+    L.text(String(n), x + 12, y - 28, 20, { bold: true, color: col });
+    L.text(label.toUpperCase(), x + 12, y - 41, 6.8, { bold: true, color: C.muted });
   });
-  L.y -= boxH + 14;
+  y -= 50 + 18;
 
-  L.panel("Next test due", [
-    ["Earliest due", summary.earliestNextTest ?? "No passed items with a next-test date"],
-    ["Per item", "Listed against each item in the attached Test Report."],
-  ]);
-  L.y -= 14;
-
+  // Declaration
   const statement: Record<Summary["overall"], string> = {
     COMPLIANT:
-      `This certifies that the electrical equipment listed in the attached Test Report was visually inspected and tested in accordance with ${business.standard} on the date(s) shown, and passed. Each item has been fitted with a compliance tag showing its next test due date.`,
+      `This certifies that the electrical equipment listed in the attached Test Report was visually inspected and tested in accordance with ${business.standard} on the date(s) shown and passed. Each item has been fitted with a compliance tag showing its next test due date.`,
     "FAILURES PRESENT":
-      `The equipment listed in the attached Test Report was visually inspected and tested in accordance with ${business.standard}. Items marked PASS are compliant. Items marked FAIL did not pass and must be withdrawn from service until repaired and retested, or disposed of.`,
+      `The electrical equipment listed in the attached Test Report was visually inspected and tested in accordance with ${business.standard}. Items marked PASS are compliant. Items marked FAIL did not pass and must be withdrawn from service until repaired and retested, or disposed of.`,
     INCOMPLETE:
-      `The equipment listed in the attached Test Report was inspected and tested in accordance with ${business.standard}. Items marked PASS are compliant. Items marked NO RESULT were not tested and are not covered by this certificate.`,
+      `The electrical equipment listed in the attached Test Report was inspected and tested in accordance with ${business.standard}. Items marked PASS are compliant. Items marked NO RESULT were not tested and are not covered by this certificate.`,
     "REVIEW REQUIRED":
-      "Some data in this report could not be read with confidence from the source PATLink export and is marked UNVERIFIED. This document must not be issued until every UNVERIFIED entry has been checked against the source PDF.",
+      "Some data in this report could not be read with confidence from the source export and is marked UNVERIFIED. This document must not be issued until every UNVERIFIED entry has been checked against the source PDF.",
   };
-  L.para(statement[summary.overall], { size: 9.5, gap: 16 });
+  L.text("DECLARATION", M, y - 8, 7, { bold: true, color: C.muted });
+  L.y = y - 14;
+  L.para(statement[summary.overall], { size: 9.5, color: C.body });
 
-  // Signature + business details
-  L.ensure(90);
-  const sy = L.y;
-  L.page.drawLine({ start: { x: M, y: sy - 34 }, end: { x: M + 200, y: sy - 34 }, thickness: 0.8, color: C.ink });
-  L.draw(`Technician: ${business.technician || "NOT SET"}`, M, sy - 46, 9);
-  L.page.drawLine({ start: { x: M + 230, y: sy - 34 }, end: { x: M + 330, y: sy - 34 }, thickness: 0.8, color: C.ink });
-  L.draw("Date", M + 230, sy - 46, 9);
-  const biz = [
-    business.businessName,
-    business.abn ? `ABN ${business.abn}` : "ABN NOT SET",
-    [business.phone, business.email].filter(Boolean).join("  ·  "),
-    [business.website, business.address].filter(Boolean).join("  ·  "),
-  ].filter(Boolean);
-  let by = sy - 8;
-  for (const [i, line] of biz.entries()) {
-    const size = i === 0 ? 10 : 8.5;
-    L.draw(line, M + W - L.width(line, size, i === 0), by - size, size, { bold: i === 0, color: i === 0 ? C.navy : C.muted });
-    by -= size + 4;
+  // Signature block, anchored above the footer.
+  const sy = Math.min(L.y - 40, BOTTOM + 52);
+  const cols = [
+    { label: "Tested by", value: business.technician || "", w: 200 },
+    { label: "Signature", value: "", w: 160 },
+    { label: "Date", value: "", w: W - 200 - 160 - 40 },
+  ];
+  let x = M;
+  for (const col of cols) {
+    if (col.value) L.text(col.value, x, sy + 6, 10, { bold: true, color: C.ink });
+    L.hline(sy, C.ink, 0.7, x, x + col.w);
+    L.text(col.label.toUpperCase(), x, sy - 11, 7, { bold: true, color: C.muted });
+    x += col.w + 20;
   }
-  L.y = Math.min(sy - 56, by) - 6;
 }
 
-function drawItem(L: Layout, item: Item) {
-  const st = displayStatus(item);
-  const shown = new Set(["name", "(room) location", "location", "test code", "next test of appliance"]);
-  const extra = item.fields.filter((f) => !shown.has(f.key.toLowerCase()));
+// ---- asset register --------------------------------------------------------
 
-  // Keep the item header and first block together where possible.
-  L.ensure(70);
-  const top = L.y;
-  L.page.drawRectangle({ x: M, y: top - 22, width: W, height: 22, color: C.panel });
-  L.page.drawRectangle({ x: M, y: top - 22, width: 3, height: 22, color: STATUS_COLOUR[st] });
-  const idText = `#${item.node}  ${item.path.join(" / ")}`;
-  L.draw(idText, M + 10, top - 15, 9, { color: C.muted });
-  L.draw(item.name ?? "NAME NOT FOUND", M + 18 + L.width(idText, 9), top - 15, 10.5, {
-    bold: true,
-    color: item.name ? C.navy : C.unverified,
-  });
-  L.chip(st, M + W - 5, top - 4, STATUS_COLOUR[st]);
-  L.y = top - 28;
-
-  const info = [
-    `Location: ${item.location ?? "—"}`,
-    `Test code: ${item.testCode ?? "—"}`,
-    `Next test: ${item.nextTest ?? "—"}`,
-  ].join("     ");
-  L.para(info, { x: M + 10, size: 8.5, color: C.ink });
-  if (extra.length) L.para(kvText(extra), { x: M + 10, size: 8, color: C.muted });
-  for (const iss of item.issues) {
-    L.para(`UNVERIFIED — check source PDF: ${iss}`, { x: M + 10, size: 8.5, bold: true, color: C.unverified });
-  }
-  if (item.tests.length === 0) L.para("No test blocks recorded.", { x: M + 10, size: 8.5, color: C.muted });
-
+function latestTest(item: Item): string | null {
+  let best: string | null = null;
+  let bestKey = -Infinity;
   for (const t of item.tests) {
-    L.ensure(40);
-    L.y -= 3;
-    const tStatus: DisplayStatus = t.issues.length > 0 || t.status === null ? "UNVERIFIED" : t.status;
-    const head = `${t.name}   ${t.timestamp}${t.instrument ? `   Instrument ${t.instrument}` : ""}`;
-    L.draw(head, M + 18, L.y - 9, 9, { bold: true, color: C.ink });
-    L.chip(tStatus, M + W - 5, L.y + 1, STATUS_COLOUR[tStatus], 7.5);
-    L.y -= 15;
-    if (t.info.length) L.para(kvText(t.info), { x: M + 18, size: 8.5 });
-    L.para(`Results:  ${t.results.length ? kvText(t.results) : "none"}`, { x: M + 18, size: 8.5 });
-    if (t.parameters.length) L.para(`Parameters:  ${kvText(t.parameters)}`, { x: M + 18, size: 8.5, color: C.muted });
-    for (const iss of t.issues) {
-      L.para(`UNVERIFIED — check source PDF: ${iss}`, { x: M + 18, size: 8.5, bold: true, color: C.unverified });
+    const k = dateKey(t.timestamp);
+    if (k !== null && k > bestKey) {
+      bestKey = k;
+      best = t.timestamp;
     }
   }
-  L.y -= 6;
-  L.page.drawLine({ start: { x: M, y: L.y }, end: { x: M + W, y: L.y }, thickness: 0.5, color: C.line });
-  L.y -= 8;
+  return best;
 }
 
-function drawReport(L: Layout, inp: RenderInput) {
-  const { report, summary } = inp;
-  L.reportPage();
-  L.para(`Site: ${report.site ?? "NOT FOUND IN PDF"}`, { size: 11, bold: true, color: C.navy });
-  L.para(
-    `Source: ${inp.sourceFilename}   ·   ${summary.total} item(s)   ·   Pass ${summary.pass}   Fail ${summary.fail}   No result ${summary.noResult}   Unverified ${summary.unverified}`,
-    { size: 8.5, color: C.muted, gap: 4 },
-  );
-
-  const attention = report.items.filter((i) => displayStatus(i) !== "PASS");
-  if (report.issues.length || inp.reviewNotes.length || attention.length) {
-    L.heading("Requires attention", C.red);
-    for (const n of [...report.issues, ...inp.reviewNotes]) {
-      L.para(`• ${n}`, { size: 8.5, color: C.unverified, bold: true });
-    }
-    for (const i of attention) {
+function drawAttention(L: Layout) {
+  const { report, reviewNotes } = L.inp;
+  const items = report.items.filter((i) => displayStatus(i) !== "PASS");
+  const lines = [
+    ...report.issues,
+    ...reviewNotes,
+    ...items.map((i) => {
       const st = displayStatus(i);
-      const why = st === "UNVERIFIED" ? ` (${i.issues.join(" ")})` : "";
-      L.para(`• ${st}: #${i.node} ${i.path.join("/")} ${i.name ?? ""}${why}`, { size: 8.5, color: STATUS_COLOUR[st] });
+      const why = st === "UNVERIFIED" ? `: ${i.issues.join(" ")}` : "";
+      return `${st}: ${i.path.at(-1) ?? ""} ${i.name ?? ""}${why}`;
+    }),
+  ];
+  if (!lines.length) return;
+  const size = 8.5;
+  const wrapped = lines.map((l) => L.wrap(`•  ${l}`, size, W - 28));
+  const h = 30 + wrapped.flat().length * size * 1.4 + 8;
+  L.ensure(h + 10);
+  L.round(M, L.y, W, h, 5, hex("#FFF7ED"), C.unverified, 1);
+  L.text("REQUIRES ATTENTION", M + 14, L.y - 19, 8, { bold: true, color: C.unverified });
+  let y = L.y - 34;
+  for (const w of wrapped) {
+    for (const l of w) {
+      L.text(l, M + 14, y, size, { color: C.ink });
+      y -= size * 1.4;
     }
-    L.y -= 4;
   }
+  L.y -= h + 14;
+}
+
+function drawRegister(L: Layout) {
+  const { report, summary } = L.inp;
+  L.reportPage();
+  L.sectionTitle(
+    "Asset register",
+    `${summary.total} item(s) inspected and tested  ·  ${summary.pass} passed  ·  ${summary.fail} failed  ·  ${summary.noResult} not tested`,
+  );
+  drawAttention(L);
+
+  const cols: Col[] = [
+    { title: "Asset", w: 44 },
+    { title: "Description", w: 120 },
+    { title: "Location", w: 96 },
+    { title: "Class", w: 60 },
+    { title: "Tested", w: 62 },
+    { title: "Next due", w: 62 },
+  ];
+  cols.push({ title: "Result", w: W - cols.reduce((a, c) => a + c.w, 0) });
+  const rows: Cell[][] = report.items.map((i) => [
+    { text: i.path.at(-1) ?? "—", bold: true, color: C.navy },
+    { text: i.name ?? "NAME NOT FOUND", color: i.name ? C.ink : C.unverified },
+    { text: i.location ?? (i.path.slice(0, -1).join(" / ") || "—") },
+    { text: i.testCode ?? "—" },
+    { text: datePart(latestTest(i)) ?? "—" },
+    { text: datePart(i.nextTest) ?? "—" },
+    { pill: displayStatus(i) },
+  ]);
+  L.table(cols, rows);
 
   const notes = report.groups.filter((g) => g.path.length > 0 && g.comment);
   if (notes.length) {
-    L.heading("Location notes");
-    for (const g of notes) L.para(`${g.path.join(" / ")}: ${g.comment}`, { size: 9 });
+    L.y -= 12;
+    L.ensure(30);
+    L.text("LOCATION NOTES", M, L.y - 8, 7, { bold: true, color: C.muted });
+    L.y -= 14;
+    for (const g of notes) L.para(`${g.path.join(" / ")}: ${g.comment}`, { size: 8.5, color: C.body });
   }
+  L.y -= 18;
+}
 
-  L.heading("Itemised results");
-  L.para("All values are shown exactly as recorded in the PATLink export.", { size: 8, color: C.muted, gap: 4 });
-  for (const item of report.items) drawItem(L, item);
+// ---- detailed results ----------------------------------------------------
+
+function itemTable(L: Layout, item: Item): { cols: Col[]; rows: Cell[][] } {
+  const mainSerial = L.inp.report.instrumentSerials[0];
+  const cols: Col[] = [
+    { title: "Test", w: 88 },
+    { title: "Date / time", w: 78 },
+    { title: "Reading", w: 108 },
+    { title: "Limit", w: 58 },
+  ];
+  const resultW = 80; // fits the UNVERIFIED pill
+  cols.push({ title: "Settings", w: W - cols.reduce((a, c) => a + c.w, 0) - resultW });
+  cols.push({ title: "Result", w: resultW });
+  const rows: Cell[][] = item.tests.map((t) => {
+    const reading = [...t.info, ...t.results.filter((k) => !isLimit(k))];
+    const limit = t.results.filter(isLimit);
+    const settings = [...t.parameters];
+    if (t.instrument && t.instrument !== mainSerial) settings.push({ key: "Instrument", value: t.instrument });
+    return [
+      { text: t.name, bold: true },
+      { text: t.timestamp, color: C.body },
+      { text: reading.length ? kvLines(reading) : "—" },
+      { text: limit.length ? limit.map((k) => k.value).join("\n") : "—" },
+      { text: settings.length ? kvLines(settings) : "—", color: C.body },
+      { pill: testStatus(t) },
+    ];
+  });
+  return { cols, rows };
+}
+
+function drawItemDetail(L: Layout, item: Item) {
+  const st = displayStatus(item);
+  const shown = new Set(["name", "(room) location", "location", "test code", "next test of appliance"]);
+  const extra = item.fields.filter((f) => !shown.has(f.key.toLowerCase()));
+  const notes = [
+    ...(extra.length ? [{ t: extra.map((k) => `${k.key}: ${k.value}`).join("   ·   "), warn: false }] : []),
+    ...item.issues.map((i) => ({ t: `UNVERIFIED — check source PDF: ${i}`, warn: true })),
+    ...item.tests.flatMap((t) => t.issues.map((i) => ({ t: `UNVERIFIED — ${t.name}: ${i}`, warn: true }))),
+  ];
+  const { cols, rows } = itemTable(L, item);
+  const tableOpts = { header: "light" as const, size: 8 };
+
+  // Keep the whole card on one page when it fits on a fresh page.
+  const cardH = 26 + 6;
+  const notesH = notes.reduce((a, n) => a + L.wrap(n.t, 8.5, W - 8).length * 8.5 * 1.4, 0);
+  const bodyH = rows.length ? L.tableHeight(cols, rows, tableOpts) : 20;
+  const total = cardH + notesH + bodyH + 16;
+  if (L.y - total < BOTTOM && total <= TOP - 82 - BOTTOM) L.reportPage();
+  else L.ensure(cardH + 60);
+
+  const h = 26;
+  L.round(M, L.y, W, h, 4, C.navySoft);
+  L.rect(M, L.y, 3.5, h, STATUS_COLOUR[st]);
+  const id = item.path.at(-1) ?? "—";
+  L.text(id, M + 14, L.y - 17, 10.5, { bold: true, color: C.navy });
+  L.text(item.name ?? "NAME NOT FOUND", M + 14 + L.width(id, 10.5, true) + 10, L.y - 17, 10.5, {
+    bold: true,
+    color: item.name ? C.ink : C.unverified,
+  });
+  const pw = L.pillWidth(st, 7.5);
+  L.pill(st, M + W - 10 - pw, L.y - h / 2, 7.5);
+  const meta = [item.testCode, item.location, item.nextTest ? `Next due ${datePart(item.nextTest)}` : null]
+    .filter(Boolean)
+    .join("   ·   ");
+  L.textRight(meta, M + W - 20 - pw, L.y - 16.5, 8, { color: C.body });
+  L.y -= cardH;
+
+  for (const n of notes) {
+    L.para(n.t, { x: M + 8, size: n.warn ? 8.5 : 8, bold: n.warn, color: n.warn ? C.unverified : C.muted });
+  }
+  if (rows.length) L.table(cols, rows, { ...tableOpts, zebra: false });
+  else L.para("No tests recorded for this item.", { x: M + 8, size: 8.5, color: C.muted });
+  L.y -= 16;
+}
+
+function drawDetails(L: Layout) {
+  L.sectionTitle("Detailed test results", "Readings, limits and settings exactly as recorded by the test instrument.");
+  for (const item of L.inp.report.items) drawItemDetail(L, item);
+
+  // Closing notes
+  const { business, sourceFilename } = L.inp;
+  L.ensure(70);
+  L.y -= 4;
+  L.hline(L.y, C.rule, 0.6);
+  L.y -= 14;
+  L.text("NOTES", M, L.y - 7, 7, { bold: true, color: C.muted });
+  L.y -= 14;
+  const notes = [
+    `Testing performed in accordance with ${business.standard}. Readings are reproduced exactly as recorded by the test instrument (source: ${sourceFilename}).`,
+    "Equipment marked FAIL must be withdrawn from service and not used until repaired and retested, or disposed of.",
+    "Each item's next test due date is shown on its compliance tag and in the asset register above.",
+  ];
+  for (const n of notes) L.para(`•  ${n}`, { size: 8, color: C.body, gap: 1 });
 }
 
 /** Create the output document and its fonts (so callers can check glyph coverage first). */
@@ -542,9 +769,10 @@ export async function renderCertificate(doc: PDFDocument, f: Fonts, inp: RenderI
     }
   }
 
-  const L = new Layout(doc, f, logo, inp.business);
-  drawCertificate(L, inp);
-  drawReport(L, inp);
-  L.footers(inp.certificateNo);
+  const L = new Layout(doc, f, logo, inp);
+  drawCertificate(L);
+  drawRegister(L);
+  drawDetails(L);
+  L.footers();
   return await doc.save();
 }
